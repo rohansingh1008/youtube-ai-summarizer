@@ -23,48 +23,62 @@ with st.sidebar:
 video_url = st.text_input("Enter YouTube Video URL:")
 
 def extract_audio_and_transcribe(url: str, api_key: str) -> str:
-    audio_file = "temp_audio.m4a"
+    """Downloads audio stream flexibly and transcribes using Groq Whisper API."""
     cookie_file = "youtube_cookies.txt"
+    output_template = "temp_audio.%(ext)s"
     
-    # Check if cookies exist in Streamlit Secrets
+    # Write cookies from secrets to a temporary file if present
     cookies_content = st.secrets.get("YOUTUBE_COOKIES", "")
     if cookies_content:
-        with open(cookie_file, "w") as f:
+        with open(cookie_file, "w", encoding="utf-8") as f:
             f.write(cookies_content)
 
     ydl_opts = {
-        'format': 'm4a/bestaudio/best',
-        'outtmpl': 'temp_audio.%(ext)s',
+        'format': 'ba/b',  # Fallback to best available audio stream
+        'outtmpl': output_template,
         'quiet': True,
         'no_warnings': True,
         'cookiefile': cookie_file if os.path.exists(cookie_file) else None,
-        'extractor_args': {'youtube': {'player_client': ['ios', 'mweb']}}
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['ios', 'mweb']
+            }
+        },
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+        }
     }
     
+    downloaded_file = None
+    
     try:
+        # Download audio
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+            info = ydl.extract_info(url, download=True)
+            downloaded_file = ydl.prepare_filename(info)
 
         client = Groq(api_key=api_key)
         
-        with open(audio_file, "rb") as file:
+        # Transcribe using Groq Whisper
+        with open(downloaded_file, "rb") as file:
             transcription = client.audio.transcriptions.create(
-                file=(audio_file, file.read()),
+                file=(downloaded_file, file.read()),
                 model="whisper-large-v3",
                 response_format="text",
             )
             
-        # Cleanup
-        if os.path.exists(audio_file):
-            os.remove(audio_file)
+        # Clean up downloaded files
+        if downloaded_file and os.path.exists(downloaded_file):
+            os.remove(downloaded_file)
         if os.path.exists(cookie_file):
             os.remove(cookie_file)
             
         return str(transcription)
 
     except Exception as e:
-        if os.path.exists(audio_file):
-            os.remove(audio_file)
+        # Clean up on error
+        if downloaded_file and os.path.exists(downloaded_file):
+            os.remove(downloaded_file)
         if os.path.exists(cookie_file):
             os.remove(cookie_file)
         return f"Pipeline Error: {str(e)}"
