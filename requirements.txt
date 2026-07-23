@@ -1,3 +1,4 @@
 streamlit
-youtube-transcript-api
+yt-dlp
+groq
 huggingface_hub

@@ -1,116 +1,97 @@
-import re
+import os
+import yt_dlp
 import streamlit as st
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
-from huggingface_hub import InferenceClient
+from groq import Groq
 
-# Page setup
-st.set_page_config(
-    page_title="AI Video Insights & Notes Generator",
-    page_icon="⚡",
-    layout="centered"
-)
+# Page Configuration
+st.set_page_config(page_title="AI Video Insights", page_icon="⚡", layout="wide")
 
 st.title("⚡ AI Video Insights Generator")
-st.caption("Transform long video lectures into structured, actionable study summaries using Hugging Face LLMs.")
+st.write("Convert any YouTube video into structured study notes using OpenAI Whisper ASR & Llama 3.3 LLM via Groq.")
 
-# Sidebar - Configuration
-st.sidebar.header("Settings")
-hf_token = st.sidebar.text_input("Hugging Face API Token", type="password")
-st.sidebar.markdown("Need a key? [Get API Token](https://huggingface.co/settings/tokens)")
+# Retrieve key from secrets if available, otherwise ask in sidebar
+groq_key = st.secrets.get("GROQ_API_KEY", "")
 
-# Core Functions
-def extract_video_id(url: str) -> str:
-    """Extracts 11-character video ID from common YouTube URL formats."""
-    pattern = r"(?:v=|\/|be\/|embed\/)([a-zA-Z0-9_-]{11})"
-    match = re.search(pattern, url)
-    return match.group(1) if match else None
-
-def get_transcript(video_id: str) -> str:
-    """Fetches and concatenates subtitle text for a given YouTube video ID."""
-    try:
-        ytt_api = YouTubeTranscriptApi()
-        fetched = ytt_api.fetch(video_id)
-        return " ".join([item.text for item in fetched])
-    except TranscriptsDisabled:
-        return "Error: Subtitles/transcripts are disabled for this video."
-    except NoTranscriptFound:
-        return "Error: No English transcript found for this video."
-    except Exception as e:
-        return f"Error extracting transcript: {str(e)}"
-
-def generate_study_notes(transcript_text: str, token: str) -> str:
-    """Processes transcript text through Hugging Face Inference API to generate structured notes."""
-    client = InferenceClient(
-        model="Qwen/Qwen2.5-Coder-32B-Instruct",
-        token=token
-    )
-    
-    trimmed_transcript = transcript_text[:12000]
-    
-    messages = [
-        {
-            "role": "system", 
-            "content": "You are an expert AI documentation tutor. Generate precise, high-quality Markdown technical notes from the provided text."
-        },
-        {
-            "role": "user", 
-            "content": f"""
-Analyze the following lecture transcript and synthesize structured, concise study notes.
-
-Use the following output structure:
-1. 📌 **Executive Overview**: High-level summary of the core topic.
-2. 🔑 **Core Takeaways**: Key concepts and primary findings.
-3. 📝 **Technical Breakdown**: In-depth conceptual analysis.
-4. ❓ **Retention Assessment**: 3 self-check questions based on the content.
-
-Transcript:
-{trimmed_transcript}
-"""
-        }
-    ]
-    
-    response = client.chat.completions.create(
-        messages=messages,
-        max_tokens=1500,
-        temperature=0.4
-    )
-    
-    return response.choices[0].message.content
-
-# Main UI
-youtube_url = st.text_input("YouTube Video URL", placeholder="https://www.youtube.com/watch?v=...")
-
-if st.button("Generate Insights", type="primary", use_container_width=True):
-    if not hf_token:
-        st.error("Please provide a valid Hugging Face API token in the sidebar.")
-    elif not youtube_url:
-        st.warning("Please provide a YouTube video URL.")
+with st.sidebar:
+    st.header("🔑 Configuration")
+    if groq_key:
+        st.success("✅ Groq API Key loaded automatically!")
     else:
-        video_id = extract_video_id(youtube_url)
+        groq_key = st.text_input("Enter Groq API Key:", type="password")
+        st.markdown("[Get a free Groq API Key](https://console.groq.com)")
+
+video_url = st.text_input("Enter YouTube Video URL:")
+
+def extract_audio_and_transcribe(url: str, api_key: str) -> str:
+    """Downloads m4a audio and transcribes instantly using Groq Whisper API."""
+    audio_file = "temp_audio.m4a"
+    
+    ydl_opts = {
+        'format': 'm4a/bestaudio/best',
+        'outtmpl': 'temp_audio.%(ext)s',
+        'quiet': True,
+        'no_warnings': True
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+
+        client = Groq(api_key=api_key)
         
-        if not video_id:
-            st.error("Invalid YouTube URL format. Please check the link.")
-        else:
-            with st.spinner("Extracting transcript data..."):
-                transcript = get_transcript(video_id)
+        with open(audio_file, "rb") as file:
+            transcription = client.audio.transcriptions.create(
+                file=(audio_file, file.read()),
+                model="whisper-large-v3",
+                response_format="text",
+            )
             
-            if transcript.startswith("Error"):
-                st.error(transcript)
-            else:
-                with st.spinner("Generating structured notes via LLM..."):
-                    try:
-                        notes = generate_study_notes(transcript, hf_token)
-                        
-                        st.success("Summary generated!")
-                        st.divider()
-                        st.markdown(notes)
-                        
-                        st.download_button(
-                            label="📥 Export Notes (.md)",
-                            data=notes,
-                            file_name=f"notes_{video_id}.md",
-                            mime="text/markdown"
-                        )
-                        
-                    except Exception as e:
-                        st.error(f"Generation failed: {str(e)}")
+        if os.path.exists(audio_file):
+            os.remove(audio_file)
+            
+        return str(transcription)
+
+    except Exception as e:
+        if os.path.exists(audio_file):
+            os.remove(audio_file)
+        return f"Pipeline Error: {str(e)}"
+
+def summarize_text(text: str, api_key: str) -> str:
+    """Summarizes transcribed text using Groq Llama 3.3-70B model."""
+    try:
+        client = Groq(api_key=api_key)
+        
+        prompt = (
+            "You are an expert technical note-taker. Provide structured study notes "
+            "with an Executive Summary, Key Takeaways, and a Technical Breakdown "
+            f"for the following transcript:\n\n{text}"
+        )
+        
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5,
+            max_tokens=1000
+        )
+        return completion.choices[0].message.content
+        
+    except Exception as e:
+        return f"LLM Error: {str(e)}"
+
+# Execution Trigger
+if st.button("Generate Summary"):
+    if not groq_key:
+        st.error("Please configure your Groq API Key!")
+    elif not video_url:
+        st.warning("Please enter a YouTube video URL.")
+    else:
+        with st.spinner("Extracting audio & transcribing with Groq Whisper..."):
+            transcript = extract_audio_and_transcribe(video_url, groq_key)
+            
+        if transcript.startswith("Pipeline Error"):
+            st.error(transcript)
+        else:
+            with st.spinner("Generating AI study notes with Llama 3.3..."):
+                summary = summarize_text(transcript, groq_key)
+                st.subheader("📝 Generated Insights")
+                st.markdown(summary)
