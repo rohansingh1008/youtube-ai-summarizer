@@ -29,19 +29,28 @@ def extract_video_id(url: str) -> str:
     return match.group(1) if match else None
 
 def get_transcript(url: str) -> str:
-    """Fetches video transcript using official/auto-generated YouTube subtitles."""
+    """Fetches video transcript using YouTubeTranscriptApi instance."""
     video_id = extract_video_id(url)
     if not video_id:
         return "Pipeline Error: Invalid YouTube URL format."
         
     try:
-        # Fetch transcript (supports English or auto-generated captions)
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'en-US'])
-        full_text = " ".join([item['text'] for item in transcript_list])
+        # Initialize the API client instance
+        ytt_api = YouTubeTranscriptApi()
+        
+        # Fetch transcript using the updated API method
+        transcript_list = ytt_api.fetch(video_id, languages=['en', 'en-US'])
+        
+        # Combine text segments
+        full_text = " ".join([item['text'] if isinstance(item, dict) else item.text for item in transcript_list])
         return full_text
     except Exception as e:
-        return f"Pipeline Error: Could not retrieve transcript. Make sure captions/subtitles are available on this video. ({str(e)})"
-
+        # Fallback to classmethod if using an older version
+        try:
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'en-US'])
+            return " ".join([item['text'] for item in transcript_list])
+        except Exception:
+            return f"Pipeline Error: Could not retrieve transcript. Make sure captions are enabled for this video. ({str(e)})"
 def summarize_text(text: str, api_key: str) -> str:
     """Summarizes transcribed text using Groq Llama 3.3-70B model."""
     try:
