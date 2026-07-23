@@ -23,23 +23,22 @@ with st.sidebar:
 video_url = st.text_input("Enter YouTube Video URL:")
 
 def extract_audio_and_transcribe(url: str, api_key: str) -> str:
-    """Downloads m4a audio and transcribes instantly using Groq Whisper API."""
     audio_file = "temp_audio.m4a"
+    cookie_file = "youtube_cookies.txt"
     
+    # Check if cookies exist in Streamlit Secrets
+    cookies_content = st.secrets.get("YOUTUBE_COOKIES", "")
+    if cookies_content:
+        with open(cookie_file, "w") as f:
+            f.write(cookies_content)
+
     ydl_opts = {
         'format': 'm4a/bestaudio/best',
         'outtmpl': 'temp_audio.%(ext)s',
         'quiet': True,
         'no_warnings': True,
-        # Bypass Cloud IP 403 Forbidden blocks by specifying Android player client
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'web']
-            }
-        },
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        }
+        'cookiefile': cookie_file if os.path.exists(cookie_file) else None,
+        'extractor_args': {'youtube': {'player_client': ['ios', 'mweb']}}
     }
     
     try:
@@ -55,14 +54,19 @@ def extract_audio_and_transcribe(url: str, api_key: str) -> str:
                 response_format="text",
             )
             
+        # Cleanup
         if os.path.exists(audio_file):
             os.remove(audio_file)
+        if os.path.exists(cookie_file):
+            os.remove(cookie_file)
             
         return str(transcription)
 
     except Exception as e:
         if os.path.exists(audio_file):
             os.remove(audio_file)
+        if os.path.exists(cookie_file):
+            os.remove(cookie_file)
         return f"Pipeline Error: {str(e)}"
 
 def summarize_text(text: str, api_key: str) -> str:
